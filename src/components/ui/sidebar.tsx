@@ -26,17 +26,20 @@ const SIDEBAR_WIDTH_MOBILE = "18rem"
 const SIDEBAR_WIDTH_ICON = "3rem"
 const SIDEBAR_KEYBOARD_SHORTCUT = "b"
 
-type SidebarContext = {
+type SidebarContextValue = {
   state: "expanded" | "collapsed"
   open: boolean
   setOpen: (open: boolean) => void
   openMobile: boolean
   setOpenMobile: (open: boolean) => void
   isMobile: boolean
+  hasMounted: boolean; // Added for hydration safety
   toggleSidebar: () => void
+  // Add a way to know the 'collapsible' prop for children if needed
+  collapsibleMode?: "offcanvas" | "icon" | "none"
 }
 
-const SidebarContext = React.createContext<SidebarContext | null>(null)
+const SidebarContext = React.createContext<SidebarContextValue | null>(null)
 
 function useSidebar() {
   const context = React.useContext(SidebarContext)
@@ -53,6 +56,8 @@ const SidebarProvider = React.forwardRef<
     defaultOpen?: boolean
     open?: boolean
     onOpenChange?: (open: boolean) => void
+    // Pass collapsible prop to provider if children need to know it
+    collapsible?: "offcanvas" | "icon" | "none"
   }
 >(
   (
@@ -63,15 +68,22 @@ const SidebarProvider = React.forwardRef<
       className,
       style,
       children,
+      collapsible = "offcanvas", // Default collapsible mode
       ...props
     },
     ref
   ) => {
-    const isMobile = useIsMobile()
+    const rawIsMobile = useIsMobile() // This hook might cause hydration issues if not careful
+    const [hasMounted, setHasMounted] = React.useState(false)
     const [openMobile, setOpenMobile] = React.useState(false)
 
-    // This is the internal state of the sidebar.
-    // We use openProp and setOpenProp for control from outside the component.
+    React.useEffect(() => {
+      setHasMounted(true)
+    }, [])
+
+    // Hydration-safe isMobile
+    const isMobile = hasMounted ? rawIsMobile : false // Default to desktop for SSR
+
     const [_open, _setOpen] = React.useState(defaultOpen)
     const open = openProp ?? _open
     const setOpen = React.useCallback(
@@ -82,22 +94,23 @@ const SidebarProvider = React.forwardRef<
         } else {
           _setOpen(openState)
         }
-
-        // This sets the cookie to keep the sidebar state.
-        document.cookie = `${SIDEBAR_COOKIE_NAME}=${openState}; path=/; max-age=${SIDEBAR_COOKIE_MAX_AGE}`
+        if (hasMounted) { // Only set cookie on client
+          document.cookie = `${SIDEBAR_COOKIE_NAME}=${openState}; path=/; max-age=${SIDEBAR_COOKIE_MAX_AGE}`
+        }
       },
-      [setOpenProp, open]
+      [setOpenProp, open, hasMounted]
     )
 
-    // Helper to toggle the sidebar.
     const toggleSidebar = React.useCallback(() => {
+      // isMobile here is the hydration-safe version
       return isMobile
-        ? setOpenMobile((open) => !open)
-        : setOpen((open) => !open)
+        ? setOpenMobile((currentOpen) => !currentOpen)
+        : setOpen((currentOpen) => !currentOpen)
     }, [isMobile, setOpen, setOpenMobile])
 
-    // Adds a keyboard shortcut to toggle the sidebar.
     React.useEffect(() => {
+      if (!hasMounted) return; // Only add event listener on client
+
       const handleKeyDown = (event: KeyboardEvent) => {
         if (
           event.key === SIDEBAR_KEYBOARD_SHORTCUT &&
@@ -110,23 +123,23 @@ const SidebarProvider = React.forwardRef<
 
       window.addEventListener("keydown", handleKeyDown)
       return () => window.removeEventListener("keydown", handleKeyDown)
-    }, [toggleSidebar])
+    }, [toggleSidebar, hasMounted])
 
-    // We add a state so that we can do data-state="expanded" or "collapsed".
-    // This makes it easier to style the sidebar with Tailwind classes.
     const state = open ? "expanded" : "collapsed"
 
-    const contextValue = React.useMemo<SidebarContext>(
+    const contextValue = React.useMemo<SidebarContextValue>(
       () => ({
         state,
         open,
         setOpen,
-        isMobile,
+        isMobile, // Use hydration-safe isMobile
+        hasMounted,
         openMobile,
         setOpenMobile,
         toggleSidebar,
+        collapsibleMode: collapsible,
       }),
-      [state, open, setOpen, isMobile, openMobile, setOpenMobile, toggleSidebar]
+      [state, open, setOpen, isMobile, hasMounted, openMobile, setOpenMobile, toggleSidebar, collapsible]
     )
 
     return (
@@ -168,14 +181,22 @@ const Sidebar = React.forwardRef<
     {
       side = "left",
       variant = "sidebar",
-      collapsible = "offcanvas",
+      collapsible = "offcanvas", // This prop is on Sidebar, but Provider also gets it now
       className,
       children,
       ...props
     },
     ref
   ) => {
-    const { isMobile, state, openMobile, setOpenMobile } = useSidebar()
+    const { isMobile, state, openMobile, setOpenMobile, hasMounted } = useSidebar()
+
+    if (!hasMounted) {
+      // To prevent hydration mismatch, render a consistent output on SSR and initial client render.
+      // For example, render the desktop structure by default or null.
+      // If isMobile from context defaults to false during SSR, this will render desktop structure.
+      // On client mount, hasMounted becomes true, isMobile updates, and it re-renders correctly.
+      // So, the existing logic should be fine if isMobile from context is hydration-safe.
+    }
 
     if (collapsible === "none") {
       return (
@@ -192,6 +213,7 @@ const Sidebar = React.forwardRef<
       )
     }
 
+    // isMobile is now hydration-safe from context
     if (isMobile) {
       return (
         <Sheet open={openMobile} onOpenChange={setOpenMobile} {...props}>
@@ -217,6 +239,7 @@ const Sidebar = React.forwardRef<
         ref={ref}
         className="group peer hidden md:block text-sidebar-foreground"
         data-state={state}
+        // The 'collapsible' prop passed to Sidebar is used here
         data-collapsible={state === "collapsed" ? collapsible : ""}
         data-variant={variant}
         data-side={side}
@@ -238,9 +261,8 @@ const Sidebar = React.forwardRef<
             side === "left"
               ? "left-0 group-data-[collapsible=offcanvas]:left-[calc(var(--sidebar-width)*-1)]"
               : "right-0 group-data-[collapsible=offcanvas]:right-[calc(var(--sidebar-width)*-1)]",
-            // Adjust the padding for floating and inset variants.
             variant === "floating" || variant === "inset"
-              ? "p-2 group-data-[collapsible=icon]:w-[calc(var(--sidebar-width-icon)_+_theme(spacing.4)_+2px)]"
+              ? "p-2 group-data-[collapsible=icon]:w-[calc(var(--sidebar-width-icon)_+_theme(spacing.4)_+_2px)]"
               : "group-data-[collapsible=icon]:w-[--sidebar-width-icon] group-data-[side=left]:border-r group-data-[side=right]:border-l",
             className
           )}
@@ -404,7 +426,7 @@ const SidebarContent = React.forwardRef<
       ref={ref}
       data-sidebar="content"
       className={cn(
-        "flex min-h-0 flex-1 flex-col gap-2 overflow-auto group-data-[collapsible=icon]:overflow-hidden",
+        "flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto group-data-[collapsible=icon]:overflow-hidden", // Eksplisit overflow-y-auto
         className
       )}
       {...props}
@@ -433,16 +455,23 @@ const SidebarGroupLabel = React.forwardRef<
   React.ComponentProps<"div"> & { asChild?: boolean }
 >(({ className, asChild = false, ...props }, ref) => {
   const Comp = asChild ? Slot : "div"
+  const { state: sidebarState, collapsibleMode } = useSidebar();
+  // Determine if we are in "icon" collapsible mode AND the sidebar is currently collapsed
+  const isInIconOnlyView = collapsibleMode === "icon" && sidebarState === "collapsed";
 
   return (
     <Comp
       ref={ref}
       data-sidebar="group-label"
       className={cn(
-        "duration-200 flex h-8 shrink-0 items-center rounded-md px-2 text-xs font-medium text-sidebar-foreground/70 outline-none ring-sidebar-ring transition-[margin,opa] ease-linear focus-visible:ring-2 [&>svg]:size-4 [&>svg]:shrink-0",
-        "group-data-[collapsible=icon]:-mt-8 group-data-[collapsible=icon]:opacity-0",
+        "duration-200 flex h-8 shrink-0 items-center rounded-md px-2 text-xs font-medium text-sidebar-foreground/70 outline-none ring-sidebar-ring transition-[margin,opacity] ease-linear focus-visible:ring-2 [&>svg]:size-4 [&>svg]:shrink-0",
+        // CSS already handles visual hiding for group-data-[collapsible=icon]
+        // group-data-[collapsible=icon] is active when collapsible="icon" AND state="collapsed"
+        "group-data-[collapsible=icon]:-mt-8 group-data-[collapsible=icon]:opacity-0 group-data-[collapsible=icon]:pointer-events-none",
         className
       )}
+      aria-hidden={isInIconOnlyView} // Hide from screen readers when in icon only view
+      tabIndex={isInIconOnlyView ? -1 : undefined} // Make non-focusable by keyboard when in icon only view
       {...props}
     />
   )
@@ -554,7 +583,12 @@ const SidebarMenuButton = React.forwardRef<
     ref
   ) => {
     const Comp = asChild ? Slot : "button"
-    const { isMobile, state } = useSidebar()
+    const { isMobile, state, setOpenMobile } = useSidebar()
+
+    const handleClick = (e: React.MouseEvent<HTMLButtonElement>) => {
+      if (isMobile) setOpenMobile(false)
+      if (props.onClick) props.onClick(e)
+    }
 
     const button = (
       <Comp
@@ -563,6 +597,7 @@ const SidebarMenuButton = React.forwardRef<
         data-size={size}
         data-active={isActive}
         className={cn(sidebarMenuButtonVariants({ variant, size }), className)}
+        onClick={handleClick}
         {...props}
       />
     )
@@ -577,6 +612,7 @@ const SidebarMenuButton = React.forwardRef<
       }
     }
 
+    // Tooltip hanya muncul saat sidebar collapsed dan bukan di mobile
     return (
       <Tooltip>
         <TooltipTrigger asChild>{button}</TooltipTrigger>

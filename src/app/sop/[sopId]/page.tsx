@@ -22,6 +22,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { useToast } from '@/hooks/use-toast';
 import { deleteSOP } from '@/lib/sop-service'; // Assuming deleteSOP is implemented
+import { cn } from '@/lib/utils';
 
 export default function SOPDetailPage() {
   const router = useRouter();
@@ -29,22 +30,27 @@ export default function SOPDetailPage() {
   const { toast } = useToast();
   const [sop, setSop] = useState<SOP | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [mounted, setMounted] = useState(false);
 
   const sopId = typeof params.sopId === 'string' ? params.sopId : '';
 
   useEffect(() => {
-    if (sopId && typeof window !== 'undefined') {
+    setMounted(true);
+  }, []);
+
+  useEffect(() => {
+    if (!mounted) return;
+    if (sopId) {
       const fetchedSOP = getSOPById(sopId);
       if (fetchedSOP) {
         setSop(fetchedSOP);
       } else {
-        // Handle SOP not found, e.g., redirect or show error
         toast({ title: "Error", description: "SOP not found.", variant: "destructive"});
         router.push('/sop');
       }
       setIsLoading(false);
     }
-  }, [sopId, router, toast]);
+  }, [sopId, router, toast, mounted]);
 
   const handleDelete = () => {
     if (sop) {
@@ -57,12 +63,15 @@ export default function SOPDetailPage() {
     }
   };
 
+  if (!mounted) {
+    return null;
+  }
+
   if (isLoading) {
     return <div className="container mx-auto text-center py-10"><p className="text-muted-foreground">Loading SOP details...</p></div>;
   }
 
   if (!sop) {
-    // This case should ideally be handled by the redirect in useEffect
     return <div className="container mx-auto text-center py-10"><p className="text-destructive">SOP not found.</p></div>;
   }
 
